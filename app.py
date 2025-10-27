@@ -218,10 +218,28 @@ def _update_devolucion_fields(text: str) -> None:
             # mensaje numérico únicamente
             st.session_state.devolucion_fields["dias_desde_compra"] = int(t)
 
-    # direccion (solo si viene en formato clave=valor para evitar falsos positivos)
+    # direccion (preferir clave=valor)
     m = re.search(r"(?:direccion(?:_cliente)?)\s*[:=]\s*(.+)$", t, re.IGNORECASE)
     if m:
         st.session_state.devolucion_fields["direccion_cliente"] = m.group(1).strip()
+        return
+
+    # Si ya es elegible y se estaba pidiendo la dirección, tomar el texto libre como dirección
+    elig = st.session_state.get("elegibilidad_result")
+    if (
+        st.session_state.devolucion_fields.get("direccion_cliente") in (None, "")
+        and isinstance(elig, dict) and elig.get("elegible") is True
+    ):
+        if len(t) >= 5 and not re.fullmatch(r"\d{1,3}", t):
+            st.session_state.devolucion_fields["direccion_cliente"] = t
+            return
+
+    # Heurística genérica de dirección (detecta palabras comunes y presencia de números)
+    if st.session_state.devolucion_fields.get("direccion_cliente") in (None, ""):
+        addr_keywords = r"\b(?:calle|cll|carrera|cra|avenida|av|transv|tv|diag|dg|km|kil[oó]metro|mz|manzana|apto|apartamento|edif|bloque|#|n°|no\.?|sector)\b"
+        if re.search(addr_keywords, t, re.IGNORECASE) and re.search(r"\d", t):
+            st.session_state.devolucion_fields["direccion_cliente"] = t
+            return
 
 
 def _build_devolucion_context() -> str:
