@@ -16,12 +16,12 @@ Asistente web con agente de IA que usa RAG sobre la carpeta "Base de conocimient
 ## Fase 1: Diseño de Arquitectura del Agente
 - Marco: LangChain para agentes y herramientas. Justificación: continuidad con el Taller 2 (migración directa del RAG), ecosistema maduro y soporte de herramienta de llamada estructurada.
 - Interfaz: Streamlit por simplicidad y despliegue rápido.
-- LLM: Gemini (gemini-1.5-flash-latest) vía langchain-google-genai con temperatura 0 para respuestas consistentes.
+- LLM: Gemini (gemini-2.5-flash-lite) vía langchain-google-genai con temperatura 0 para respuestas consistentes.
 - RAG:
   - Ingesta: archivos .txt y .json desde "Base de conocimientos".
   - Chunking: RecursiveCharacterTextSplitter (800, solapamiento 150).
-  - Embeddings: intfloat/multilingual-e5-base.
-  - Índice: FAISS en memoria, retriever con k=3 (configurable).
+  - Embeddings: models/text-embedding-004 (Google Generative AI).
+  - Índice: FAISS en memoria; fallback a Chroma si FAISS no está disponible; retriever con k=3 (configurable).
 - Herramientas (Tools):
   1) buscar_en_base_de_conocimiento(query): usa el retriever semántico y retorna fragmentos con fuentes.
   2) verificar_elegibilidad_producto(numero_orden, dias_desde_compra): simula la política (<=30 días) y devuelve JSON.
@@ -30,6 +30,18 @@ Asistente web con agente de IA que usa RAG sobre la carpeta "Base de conocimient
   - Priorizar RAG para preguntas generales.
   - Exigir numero_orden y dias_desde_compra antes de verificar elegibilidad.
   - Nunca generar etiqueta sin verificar elegibilidad primero.
+
+- Diagrama de flujo del proceso de devolución:
+  - Usuario solicita devolución
+    -> ¿proporcionó numero_orden y dias_desde_compra?
+      - No: solicitar los datos faltantes (no llamar herramientas todavía).
+      - Sí: llamar herramienta verificar_elegibilidad_producto.
+        -> ¿la orden es elegible (<=30 días)?
+          - No: informar no elegible y el motivo; ofrecer consulta de políticas con RAG.
+          - Sí: ¿proporcionó direccion_cliente?
+            - No: solicitar direccion_cliente.
+            - Sí: llamar herramienta generar_etiqueta_devolucion
+                 -> devolver JSON con guía y URL de etiqueta al usuario.
 
 ## Fase 2: Implementación y Conexión de Componentes
 - Migración del notebook RAG (carga, chunking, embeddings FAISS) a rag_module.py.

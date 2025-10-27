@@ -16,13 +16,19 @@ class _SuppressSchemaTitle(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         return "Key 'title' is not supported in schema" not in record.getMessage()
 
+# Silenciar logger de google.generativeai completamente (además del filtro)
 logger_gemini = logging.getLogger("google.generativeai")
+logger_gemini.handlers.clear()
+logger_gemini.propagate = False
 logger_gemini.addFilter(_SuppressSchemaTitle())
-logger_gemini.setLevel(logging.ERROR)
-# También suprimir si llega como warning estándar
+logger_gemini.setLevel(logging.CRITICAL)
+
+# Suprimir también como warning estándar, apuntando al módulo específico
 warnings.filterwarnings(
     "ignore",
     message=r"Key 'title' is not supported in schema.*",
+    category=UserWarning,
+    module=r".*google\.generativeai.*",
 )
 
 from langchain_google_genai import ChatGoogleGenerativeAI

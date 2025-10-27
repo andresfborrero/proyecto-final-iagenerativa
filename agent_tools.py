@@ -14,7 +14,7 @@ from typing import List
 
 from langchain.tools import tool
 
-from rag_module import get_retriever
+from rag_module import get_retriever, simple_keyword_search
 
 
 @tool
@@ -28,20 +28,39 @@ def buscar_en_base_de_conocimiento(query: str) -> str:
     """
     retriever = get_retriever()
     if retriever is None:
-        return "RAG no disponible: no hay índice construido sobre la Base de conocimientos."
+        # Último recurso: búsqueda por palabras clave
+        fb = simple_keyword_search(query)
+        if not fb:
+            return "RAG no disponible: no hay índice construido sobre la Base de conocimientos."
+        lines: List[str] = ["Resultados de la Base de conocimientos (búsqueda básica):"]
+        for i, d in enumerate(fb, start=1):
+            src = d.get("metadata", {}).get("source", "desconocido")
+            snippet = d.get("text", "").strip().replace("\n", " ")
+            lines.append(f"[{i}] ({src}) {snippet}")
+        return "\n".join(lines)
 
     try:
-        docs = retriever.get_relevant_documents(query)
-    except Exception as e:
-        return f"Error al recuperar información: {e}"
+        # En LangChain >=0.1.46 get_relevant_documents está deprecado; usar invoke
+        docs = retriever.invoke(query)
+    except Exception:
+        docs = []
 
+    # Fallback si no hay resultados semánticos
     if not docs:
-        return "No se encontró información relevante en la Base de conocimientos."
+        fb = simple_keyword_search(query)
+        if not fb:
+            return "No se encontró información relevante en la Base de conocimientos."
+        lines: List[str] = ["Resultados de la Base de conocimientos (búsqueda básica):"]
+        for i, d in enumerate(fb, start=1):
+            src = d.get("metadata", {}).get("source", "desconocido")
+            snippet = d.get("text", "").strip().replace("\n", " ")
+            lines.append(f"[{i}] ({src}) {snippet}")
+        return "\n".join(lines)
 
     lines: List[str] = ["Resultados de la Base de conocimientos:"]
     for i, d in enumerate(docs, start=1):
-        src = d.metadata.get("source", "desconocido")
-        snippet = d.page_content.strip().replace("\n", " ")
+        src = getattr(d, "metadata", {}).get("source", "desconocido")
+        snippet = getattr(d, "page_content", "").strip().replace("\n", " ")
         lines.append(f"[{i}] ({src}) {snippet}")
     return "\n".join(lines)
 
