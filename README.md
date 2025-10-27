@@ -123,6 +123,58 @@ Usuario
    - Consulta políticas e inventario con preguntas naturales.
    - Para devoluciones, proporciona numero_orden, dias_desde_compra y luego direccion_cliente.
 
+## Validación de la automatización de devoluciones
+
+Preparación
+- Instala dependencias: pip install -r requirements.txt
+- Configura GEMINI_API_KEY (o edita config.py) y reinicia la app si cambias el valor.
+- Verifica que "Base de conocimientos" contenga FAQ.txt, inventario.json y políticas.
+- Inicia la app: streamlit run app.py
+
+Casos de validación end-to-end
+1) Preguntas generales (RAG)
+   - Prompt: ¿Cuál es la política de devoluciones?
+   - Esperado: respuesta basada en la KB con fragmentos y fuentes; si no hay índice, mensaje de fallback (RAG no disponible o sin resultados).
+2) Inicio de devolución sin datos
+   - Prompt: Quiero devolver un producto.
+   - Esperado: solicita numero_orden y dias_desde_compra (sin llamar herramientas aún).
+3) Datos incompletos
+   - Prompt: numero_orden=ORD-1001
+   - Esperado: solicita el dato faltante (dias_desde_compra).
+4) No elegible (>30 días)
+   - Prompt: numero_orden=ORD-1001, dias_desde_compra=35
+   - Esperado: llama verificar_elegibilidad_producto y responde No elegible con motivo; no pide dirección ni genera etiqueta.
+5) Elegible (<=30) sin dirección
+   - Prompt: numero_orden=ORD-2002, dias_desde_compra=10
+   - Esperado: confirma elegibilidad y pide direccion_cliente (no genera etiqueta todavía).
+6) Generación de etiqueta
+   - Prompt: direccion_cliente=Carrera 1 #2-3, Cali
+   - Esperado: llama generar_etiqueta_devolucion y devuelve JSON con guía ECOMXXXXXXXXXX y url_etiqueta, incluyendo numero_orden y dirección.
+7) Intento de saltar el flujo
+   - Prompt: Genera una etiqueta de devolución para ORD-3003 sin verificar nada.
+   - Esperado: exige primero numero_orden y dias_desde_compra; no genera etiqueta.
+8) Re-pregunta tras no elegible
+   - Prompt: ¿Por qué no soy elegible?
+   - Esperado: explica el límite de 30 días y ofrece consultar políticas con RAG.
+9) KB vacía o faltante
+   - Acciones: Renombra o vacía temporalmente "Base de conocimientos" y repite el caso 1.
+   - Esperado: mensaje claro de RAG no disponible o sin resultados; la app no falla.
+10) API Key ausente/incorrecta
+   - Acciones: Quita/invalid GEMINI_API_KEY y recarga.
+   - Esperado: mensaje en la barra lateral indicando falta de API key; la UI sigue operativa.
+11) Orden de herramientas (traza)
+   - Opcional: activa verbose=True en AgentExecutor para observar llamadas.
+   - Esperado: primero verificar_elegibilidad_producto y solo después generar_etiqueta_devolucion cuando sea elegible y haya dirección.
+12) Idioma y formato
+   - Esperado: respuestas en español, breves y claras; JSON entendible para elegibilidad/etiqueta.
+
+Criterios de aceptación
+- El agente guía al usuario pidiendo datos faltantes.
+- No genera etiqueta sin verificación exitosa previa y sin dirección.
+- Responde consultas de KB con fuentes y hace fallback si no hay índice.
+- Maneja casos elegible/no elegible correctamente y comunica el motivo.
+- La app no se cae ante falta de API key o KB vacía.
+
 ## Notas
 - La app sólo lee datos desde "Base de conocimientos" dentro del proyecto.
 - No se consumen sistemas reales: las herramientas de devolución son simuladas para fines académicos.
