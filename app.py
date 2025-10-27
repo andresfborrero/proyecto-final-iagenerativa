@@ -15,6 +15,13 @@ import warnings
 from time import time
 from typing import List
 import re
+# Nuevos imports para PDF
+from datetime import datetime
+try:
+    from fpdf import FPDF
+except Exception:  # módulo opcional; si no está, omitimos PDF
+    FPDF = None  # type: ignore
+
 class _SuppressSchemaTitle(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         return "Key 'title' is not supported in schema" not in record.getMessage()
@@ -103,12 +110,24 @@ if "max_ctx_messages" not in st.session_state:
     st.session_state.max_ctx_messages = 12
 if "agent_verbose" not in st.session_state:
     st.session_state.agent_verbose = False
+# Estado para PDF de etiqueta
+if "etiqueta_pdf" not in st.session_state:
+    st.session_state.etiqueta_pdf = None
 st.session_state.ttl_minutes = int(st.sidebar.number_input("TTL inactividad (min)", 5, 120, st.session_state.ttl_minutes))
 st.session_state.max_ctx_messages = int(st.sidebar.number_input("Mensajes al modelo (contexto)", 4, 40, st.session_state.max_ctx_messages))
 st.session_state.agent_verbose = bool(st.sidebar.checkbox("Modo depuración (verbose)", value=st.session_state.agent_verbose))
 if st.sidebar.button("Reiniciar conversación"):
     st.session_state.chat_history = []
     st.session_state.last_activity_ts = time()
+    # Limpiar completamente el contexto de devoluciones para evitar estados obsoletos
+    st.session_state.devolucion_fields = {
+        "numero_orden": None,
+        "dias_desde_compra": None,
+        "direccion_cliente": None,
+    }
+    st.session_state.elegibilidad_result = None
+    st.session_state.etiqueta_result = None
+    st.session_state.etiqueta_pdf = None
     st.sidebar.success("Conversación reiniciada.")
 
 # Asegurar variable esperada por SDK
@@ -216,11 +235,94 @@ def _build_devolucion_context() -> str:
     )
 
 
+# Helper: construir PDF en memoria con datos de la etiqueta
+def _build_label_pdf(etiqueta: dict) -> bytes:
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    # Encabezado
+    pdf.set_font("Arial", "B", 18)
+    pdf.cell(0, 12, "EcoMarket - Etiqueta de Devolución", ln=True)
+    pdf.set_font("Arial", size=11)
+    pdf.cell(0, 8, f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True)
+    pdf.ln(4)
+
+    # Datos de la etiqueta
+    orden = etiqueta.get("numero_orden", "-")
+    guia = etiqueta.get("guia", "-")
+    direccion = etiqueta.get("direccion_cliente", "-")
+
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(40, 8, "N° de orden:")
+    pdf.set_font("Arial", size=12)
+    pdf.cell(0, 8, str(orden), ln=True)
+
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(40, 8, "Guía:")
+    pdf.set_font("Arial", size=12)
+    pdf.cell(0, 8, str(guia), ln=True)
+
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(40, 8, "Dirección:")
+    pdf.set_font("Arial", size=12)
+    # Dividir dirección en varias líneas si es larga
+    for line in pdf.multi_cell(0, 8, str(direccion), split_only=True):
+        pdf.cell(0, 8, line, ln=True)
+
+    pdf.ln(6)
+    pdf.set_font("Arial", "I", 10)
+    pdf.multi_cell(0, 6, "Pega esta etiqueta en el paquete. Llévalo al punto de envío autorizado.")
+
+    # Pie de página simple
+    pdf.ln(10)
+    pdf.set_font("Arial", size=9)
+    pdf.cell(0, 6, "EcoMarket - Devoluciones", ln=True)
+
+    # Retornar bytes
+    # fpdf2 devuelve str (latin-1) con dest='S'; convertir a bytes
+    try:
+        return pdf.output(dest="S").encode("latin1")
+    except Exception:
+        # Fallback básico: guardar a temp y reabrir (menos ideal, pero robusto)
+        import tempfile, os as _os
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        tmp_path = tmp.name
+        tmp.close()
+        pdf.output(tmp_path)
+        with open(tmp_path, "rb") as fh:
+            data = fh.read()
+        try:
+            _os.remove(tmp_path)
+        except Exception:
+            pass
+        return data
+
+
 def _maybe_handle_devolucion() -> str | None:
     f = st.session_state.devolucion_fields
     numero = f.get("numero_orden")
     dias = f.get("dias_desde_compra")
     direccion = f.get("direccion_cliente")
+
+    # Normalizar/depurar resultados previos: si la elegibilidad almacenada no corresponde
+    # al caso actual (otro número de orden o días distintos), reiniciar para recalcular
+    prev = st.session_state.elegibilidad_result if isinstance(st.session_state.elegibilidad_result, dict) else None
+    try:
+        if prev and (
+            (numero and str(prev.get("numero_orden", "")).upper() != str(numero).upper()) or
+            (isinstance(dias, int) and isinstance(prev.get("dias_desde_compra"), (int, float)) and int(prev.get("dias_desde_compra")) != int(dias))
+        ):
+            st.session_state.elegibilidad_result = None
+            st.session_state.etiqueta_result = None
+            st.session_state.etiqueta_pdf = None
+            prev = None
+    except Exception:
+        # Si el formato no es el esperado, limpiar por seguridad
+        st.session_state.elegibilidad_result = None
+        st.session_state.etiqueta_result = None
+        st.session_state.etiqueta_pdf = None
+        prev = None
 
     # Paso 1: si ya tenemos elegibilidad calculada y es no elegible, informar y resetear contexto mínimo
     if st.session_state.elegibilidad_result and not st.session_state.elegibilidad_result.get("elegible", False):
@@ -229,6 +331,7 @@ def _maybe_handle_devolucion() -> str | None:
         st.session_state.devolucion_fields = {"numero_orden": None, "dias_desde_compra": None, "direccion_cliente": None}
         st.session_state.elegibilidad_result = None
         st.session_state.etiqueta_result = None
+        st.session_state.etiqueta_pdf = None
         return f"Tu orden {res.get('numero_orden')} no es elegible para devolución. Motivo: {res.get('motivo')}"
 
     # Paso 2: si tenemos número y días pero aún no hemos calculado elegibilidad
@@ -253,6 +356,7 @@ def _maybe_handle_devolucion() -> str | None:
             st.session_state.devolucion_fields = {"numero_orden": None, "dias_desde_compra": None, "direccion_cliente": None}
             st.session_state.elegibilidad_result = None
             st.session_state.etiqueta_result = None
+            st.session_state.etiqueta_pdf = None
             return f"Tu orden {res.get('numero_orden')} no es elegible para devolución. Motivo: {res.get('motivo')}"
 
     # Paso 3: si es elegible y tenemos dirección, generamos etiqueta
@@ -268,16 +372,32 @@ def _maybe_handle_devolucion() -> str | None:
         except Exception:
             etiqueta = {"numero_orden": numero, "direccion_cliente": direccion, "guia": "ECOMERROR", "url_etiqueta": "N/A", "estado": "generada"}
         st.session_state.etiqueta_result = etiqueta
-        # Reset para nuevo caso
+        # Generar PDF local y guardarlo en sesión (si FPDF disponible)
+        has_pdf = False
+        if FPDF is not None:
+            try:
+                pdf_bytes = _build_label_pdf(etiqueta)
+                fname = f"Etiqueta_{etiqueta.get('guia', 'ECOM')}.pdf"
+                st.session_state.etiqueta_pdf = {"bytes": pdf_bytes, "filename": fname}
+                has_pdf = True
+            except Exception as e:
+                _ecobot_logger.exception("Error generando PDF de etiqueta: %s", e)
+                st.session_state.etiqueta_pdf = None
+        else:
+            st.session_state.etiqueta_pdf = None
+        # Reset para nuevo caso (conservamos etiqueta_result/pdf para el render actual)
         st.session_state.devolucion_fields = {"numero_orden": None, "dias_desde_compra": None, "direccion_cliente": None}
         st.session_state.elegibilidad_result = None
-        msg = (
-            "Etiqueta de devolución generada:\n"
-            f"- Orden: {etiqueta.get('numero_orden')}\n"
-            f"- Guía: {etiqueta.get('guia')}\n"
-            f"- URL: {etiqueta.get('url_etiqueta')}\n"
-        )
-        return msg
+        msg_lines = [
+            "Etiqueta de devolución generada:",
+            f"- Orden: {etiqueta.get('numero_orden')}",
+            f"- Guía: {etiqueta.get('guia')}",
+        ]
+        if has_pdf:
+            msg_lines.append("- Descarga: usa el botón de abajo para obtener el PDF.")
+        else:
+            msg_lines.append("- Nota: no se pudo generar el PDF local en este entorno.")
+        return "\n".join(msg_lines)
 
     # Si no podemos manejarlo determinísticamente, dejar al agente
     return None
@@ -288,6 +408,11 @@ elapsed = now_ts - float(st.session_state.last_activity_ts or 0)
 if elapsed > st.session_state.ttl_minutes * 60 and st.session_state.chat_history:
     st.info("La conversación se reinició por inactividad.")
     st.session_state.chat_history = []
+    # Limpiar también el flujo de devolución para evitar residuos de una sesión previa
+    st.session_state.devolucion_fields = {"numero_orden": None, "dias_desde_compra": None, "direccion_cliente": None}
+    st.session_state.elegibilidad_result = None
+    st.session_state.etiqueta_result = None
+    st.session_state.etiqueta_pdf = None
     _ecobot_logger.info("TTL expirado: chat_history borrado tras %.1f segundos", elapsed)
 
 # Log inicial del estado de sesión
@@ -315,6 +440,16 @@ if user_input:
     if handled is not None:
         with st.chat_message("assistant"):
             st.markdown(handled)
+            # Si se generó un PDF, ofrecer botón de descarga
+            if st.session_state.etiqueta_pdf and isinstance(st.session_state.etiqueta_pdf, dict):
+                st.download_button(
+                    label="Descargar etiqueta (PDF)",
+                    data=st.session_state.etiqueta_pdf.get("bytes", b""),
+                    file_name=st.session_state.etiqueta_pdf.get("filename", "Etiqueta_EcoMarket.pdf"),
+                    mime="application/pdf",
+                )
+                # Limpiar para no repetir en respuestas futuras
+                st.session_state.etiqueta_pdf = None
         st.session_state.chat_history.append(AIMessage(handled))
         st.session_state.last_activity_ts = time()
         _log_session_state("after_ai_message")

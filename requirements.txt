@@ -21,3 +21,6 @@ numpy<2
 
 # UI
 streamlit>=1.32,<2
+
+# PDF generation for local labels
+fpdf2>=2.7,<3
