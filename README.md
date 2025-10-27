@@ -43,6 +43,54 @@ Asistente web con agente de IA que usa RAG sobre la carpeta "Base de conocimient
             - Sí: llamar herramienta generar_etiqueta_devolucion
                  -> devolver JSON con guía y URL de etiqueta al usuario.
 
+## Diagrama de arquitectura (alto nivel)
+```text
+Usuario
+  |
+  v
++---------------------------+
+| Streamlit UI (app.py)     |
+| - chat_input/chat_output  |
+| - st.session_state (hist) |
++-------------+-------------+
+              |
+              v
++---------------------------+
+| AgentExecutor (LangChain) |
+| - create_tool_calling_agent
+| - Prompt con reglas       |
++------+------+-------------+
+       |    |
+       |    +------------------------------+
+       |                                   |
+       v                                   v
++-------------------+            +---------------------------+
+| LLM (Gemini)      |            | Tools (agent_tools.py)    |
+| gemini-2.5-flash- |            | - buscar_en_base...       |
+| lite              |            | - verificar_elegibilidad  |
++---------+---------+            | - generar_etiqueta        |
+          |                      +------------+--------------+
+          |                                   |
+          |                                   v
+          |                         +-------------------------+
+          |                         | RAG (rag_module.py)     |
+          |                         | - load kb files         |
+          |                         | - chunking              |
+          |                         | - embeddings:           |
+          |                         |   models/text-embedding-004
+          |                         | - Vector store:         |
+          |                         |   FAISS | Chroma (fb)   |
+          |                         +------------+------------+
+          |                                      |
+          |                                      v
+          |                         +-------------------------+
+          |                         | Base de conocimientos   |
+          |                         | (.txt, .md, .json)      |
+          |                         +-------------------------+
+          |
+          +---- Respuestas del LLM y de Tools -> Agent -> UI
+```
+
 ## Fase 2: Implementación y Conexión de Componentes
 - Migración del notebook RAG (carga, chunking, embeddings FAISS) a rag_module.py.
 - Herramientas definidas en agent_tools.py y expuestas en all_tools.
