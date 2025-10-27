@@ -1,0 +1,24 @@
+Política de Devoluciones de EcoMarket (30 días)
+
+Resumen:
+- Los clientes pueden solicitar la devolución de productos dentro de los 30 días calendario posteriores a la compra.
+- Se requiere número de orden y comprobante de compra.
+- El producto debe estar en buen estado, sin uso indebido y con sus accesorios originales.
+
+Proceso general:
+1) Verificación de elegibilidad: numero_orden y días desde la compra.
+2) Generación de etiqueta de devolución para envíos elegibles.
+3) Recepción y validación del producto en el centro logístico.
+4) Reembolso o cambio según preferencia del cliente y disponibilidad.
+
+Excepciones:
+- Productos de higiene personal abiertos (p. ej., cosméticos, shampoo sólido) no son elegibles por razones sanitarias.
+- Productos con señales de mal uso, manipulación indebida o daños por parte del usuario no son elegibles.
+- Artículos en oferta final (liquidación) pueden no aplicar a devoluciones a menos que presenten defectos de fabricación.
+
+Tiempos y reembolsos:
+- El reembolso se procesa en un máximo de 10 días hábiles tras la validación del producto.
+- El método de reembolso coincide con el método de pago original, salvo acuerdo diferente con el cliente.
+
+Soporte:
+- Para asistencia, contacte al centro de atención al cliente con su número de orden y datos de contacto.

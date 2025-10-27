@@ -1,0 +1,45 @@
+{
+  "productos": [
+    {
+      "id": 1,
+      "nombre": "Botella de agua reutilizable 750ml",
+      "categoria": "Hidratación",
+      "precio": 45000,
+      "moneda": "COP",
+      "stock": 120,
+      "sku": "BOT-750-VERDE",
+      "descripcion": "Botella de acero inoxidable, libre de BPA, tapa rosca a prueba de fugas."
+    },
+    {
+      "id": 2,
+      "nombre": "Bolsa ecológica de tela (pack x2)",
+      "categoria": "Accesorios",
+      "precio": 28000,
+      "moneda": "COP",
+      "stock": 85,
+      "sku": "BOL-TELA-2PZ",
+      "descripcion": "Bolsas reutilizables de algodón orgánico, soportan hasta 12 kg."
+    },
+    {
+      "id": 3,
+      "nombre": "Kit de cubiertos de bambú",
+      "categoria": "Cocina",
+      "precio": 32000,
+      "moneda": "COP",
+      "stock": 60,
+      "sku": "KIT-BAMBU-COC",
+      "descripcion": "Cuchillo, tenedor, cuchara y estuche de tela. Apto para lavavajillas."
+    },
+    {
+      "id": 4,
+      "nombre": "Shampoo sólido aroma cítrico",
+      "categoria": "Cuidado personal",
+      "precio": 38000,
+      "moneda": "COP",
+      "stock": 40,
+      "sku": "SHA-SOL-CIT",
+      "descripcion": "Libre de sulfatos y parabenos. Aprox. 60 lavadas."
+    }
+  ],
+  "ultima_actualizacion": "2025-10-26"
+}
