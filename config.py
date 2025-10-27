@@ -20,7 +20,7 @@ KB_DIR: Path = BASE_DIR / "Base de conocimientos"
 # Parámetros de RAG
 BASE_CHUNK_SIZE: int = 800
 BASE_CHUNK_OVERLAP: int = 150
-TOP_K_RESULTS: int = 3
+TOP_K_RESULTS: int = 10
 
 # Otras constantes útiles
 APP_NAME: str = "proyecto_final_ecomarket"

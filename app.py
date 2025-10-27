@@ -12,6 +12,9 @@ import streamlit as st
 # Silenciar mensaje ruidoso del SDK de Google sobre 'title' en el schema ANTES de importar el cliente
 import logging
 import warnings
+from time import time
+from typing import List
+import re
 class _SuppressSchemaTitle(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         return "Key 'title' is not supported in schema" not in record.getMessage()
@@ -44,10 +47,69 @@ from config import (
     KB_DIR,
 )
 from agent_tools import all_tools
+# Importar herramientas específicas para uso directo (acceso a .func)
+from agent_tools import verificar_elegibilidad_producto, generar_etiqueta_devolucion
+
+# ----------------------
+# Logger de la aplicación
+# ----------------------
+_ecobot_logger = logging.getLogger("ecobot")
+if not _ecobot_logger.handlers:
+    _handler = logging.StreamHandler()
+    _formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    _handler.setFormatter(_formatter)
+    _ecobot_logger.addHandler(_handler)
+_ecobot_logger.setLevel(logging.INFO)
+
+
+def _log_session_state(context: str) -> None:
+    """Imprime un resumen del estado de sesión en los logs.
+
+    Evita serializar objetos complejos; para chat_history muestra longitud y último mensaje.
+    """
+    try:
+        summary: dict = {}
+        for k, v in st.session_state.items():
+            if k == "chat_history" and isinstance(v, list):
+                last = None
+                if v:
+                    last_obj = v[-1]
+                    # Los mensajes de LangChain suelen tener atributo .content
+                    last = getattr(last_obj, "content", str(last_obj))
+                    # Limitar tamaño del log
+                    if isinstance(last, str) and len(last) > 300:
+                        last = last[:300] + "…"
+                summary[k] = {
+                    "type": "list",
+                    "length": len(v),
+                    "last": last,
+                    "message_types": sorted({type(m).__name__ for m in v}),
+                }
+            else:
+                summary[k] = type(v).__name__
+        _ecobot_logger.info("Session state [%s]: %s", context, summary)
+    except Exception as e:
+        _ecobot_logger.exception("Error registrando session_state [%s]: %s", context, e)
 
 # Configuración de página
 st.set_page_config(page_title=STREAMLIT_PAGE_TITLE, page_icon=STREAMLIT_PAGE_ICON)
 st.title("EcoBot - Asistente de Devoluciones y Consultas")
+
+# Controles en la barra lateral
+st.sidebar.subheader("Sesión")
+if "ttl_minutes" not in st.session_state:
+    st.session_state.ttl_minutes = 15
+if "max_ctx_messages" not in st.session_state:
+    st.session_state.max_ctx_messages = 12
+if "agent_verbose" not in st.session_state:
+    st.session_state.agent_verbose = False
+st.session_state.ttl_minutes = int(st.sidebar.number_input("TTL inactividad (min)", 5, 120, st.session_state.ttl_minutes))
+st.session_state.max_ctx_messages = int(st.sidebar.number_input("Mensajes al modelo (contexto)", 4, 40, st.session_state.max_ctx_messages))
+st.session_state.agent_verbose = bool(st.sidebar.checkbox("Modo depuración (verbose)", value=st.session_state.agent_verbose))
+if st.sidebar.button("Reiniciar conversación"):
+    st.session_state.chat_history = []
+    st.session_state.last_activity_ts = time()
+    st.sidebar.success("Conversación reiniciada.")
 
 # Asegurar variable esperada por SDK
 if GEMINI_API_KEY and GEMINI_API_KEY != "YOUR_GEMINI_API_KEY":
@@ -77,7 +139,10 @@ system_instructions = (
     "3) Nunca generes una etiqueta antes de verificar elegibilidad. "
     "   Llama 'generar_etiqueta_devolucion' únicamente si la orden es elegible y el usuario provee direccion_cliente. "
     "4) Si no hay información suficiente, indícalo y ofrece usar la base de conocimientos. "
-    "5) No inventes datos como números de guía o políticas no documentadas."
+    "5) Si el usuario responde solo con un número y estabas pidiendo los días, interprétalo como dias_desde_compra. "
+    "6) Usa el contexto de devolución proporcionado para no repetir preguntas innecesarias. "
+    "7) No inventes datos como números de guía o políticas no documentadas. "
+    "\n\nContexto de la devolución actual: {devolucion_context}"
 )
 
 prompt = ChatPromptTemplate.from_messages([
@@ -90,11 +155,143 @@ prompt = ChatPromptTemplate.from_messages([
 
 # Construcción del agente con herramientas
 agent = create_tool_calling_agent(llm, all_tools, prompt)
-agent_executor = AgentExecutor(agent=agent, tools=all_tools, verbose=False)
+agent_executor = AgentExecutor(agent=agent, tools=all_tools, verbose=st.session_state.agent_verbose, max_iterations=6, early_stopping_method="generate")
 
 # Estado de sesión para historial
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []  # List[BaseMessage]
+if "last_activity_ts" not in st.session_state:
+    st.session_state.last_activity_ts = time()
+if "devolucion_fields" not in st.session_state:
+    st.session_state.devolucion_fields = {
+        "numero_orden": None,
+        "dias_desde_compra": None,
+        "direccion_cliente": None,
+    }
+if "elegibilidad_result" not in st.session_state:
+    st.session_state.elegibilidad_result = None
+if "etiqueta_result" not in st.session_state:
+    st.session_state.etiqueta_result = None
+
+
+def _update_devolucion_fields(text: str) -> None:
+    t = text.strip()
+    # numero de orden con etiqueta
+    m = re.search(r"(?:numero\s*de\s*orden|numero_?orden|orden)\s*[:=]?\s*([A-Za-z]{2,5}-?\d{3,8})", t, re.IGNORECASE)
+    if m:
+        st.session_state.devolucion_fields["numero_orden"] = m.group(1).upper()
+    else:
+        # numero de orden sin etiqueta (p.ej., "ORD-1001")
+        m2 = re.search(r"\b([A-Za-z]{2,5}-?\d{3,8})\b", t)
+        if m2:
+            st.session_state.devolucion_fields["numero_orden"] = m2.group(1).upper()
+
+    # dias desde compra (etiqueta antes del número)
+    m = re.search(r"(?:dias\s*(?:desde\s*(?:la\s*)?compra)?)\s*[:=]?\s*(\d{1,3})\b", t, re.IGNORECASE)
+    if m:
+        st.session_state.devolucion_fields["dias_desde_compra"] = int(m.group(1))
+    else:
+        # número seguido de 'dia/dias' (con o sin tilde), ej: "5 dias" o "tiene 5 días"
+        m2 = re.search(r"\b(\d{1,3})\s*d[ií]a[s]?\b", t, re.IGNORECASE)
+        if m2:
+            st.session_state.devolucion_fields["dias_desde_compra"] = int(m2.group(1))
+        elif re.fullmatch(r"\d{1,3}", t):
+            # mensaje numérico únicamente
+            st.session_state.devolucion_fields["dias_desde_compra"] = int(t)
+
+    # direccion (solo si viene en formato clave=valor para evitar falsos positivos)
+    m = re.search(r"(?:direccion(?:_cliente)?)\s*[:=]\s*(.+)$", t, re.IGNORECASE)
+    if m:
+        st.session_state.devolucion_fields["direccion_cliente"] = m.group(1).strip()
+
+
+def _build_devolucion_context() -> str:
+    f = st.session_state.devolucion_fields
+    def fmt(v):
+        return "ND" if v in (None, "") else str(v)
+    return (
+        f"numero_orden={fmt(f.get('numero_orden'))}; "
+        f"dias_desde_compra={fmt(f.get('dias_desde_compra'))}; "
+        f"direccion_cliente={fmt(f.get('direccion_cliente'))}"
+    )
+
+
+def _maybe_handle_devolucion() -> str | None:
+    f = st.session_state.devolucion_fields
+    numero = f.get("numero_orden")
+    dias = f.get("dias_desde_compra")
+    direccion = f.get("direccion_cliente")
+
+    # Paso 1: si ya tenemos elegibilidad calculada y es no elegible, informar y resetear contexto mínimo
+    if st.session_state.elegibilidad_result and not st.session_state.elegibilidad_result.get("elegible", False):
+        res = st.session_state.elegibilidad_result
+        # Luego de informar, limpiar solo los campos de devolución para permitir nuevos casos
+        st.session_state.devolucion_fields = {"numero_orden": None, "dias_desde_compra": None, "direccion_cliente": None}
+        st.session_state.elegibilidad_result = None
+        st.session_state.etiqueta_result = None
+        return f"Tu orden {res.get('numero_orden')} no es elegible para devolución. Motivo: {res.get('motivo')}"
+
+    # Paso 2: si tenemos número y días pero aún no hemos calculado elegibilidad
+    if numero and isinstance(dias, int) and st.session_state.elegibilidad_result is None:
+        try:
+            raw = verificar_elegibilidad_producto.func(numero_orden=numero, dias_desde_compra=int(dias))
+        except Exception as e:
+            _ecobot_logger.exception("Error en verificar_elegibilidad_producto: %s", e)
+            return "Ocurrió un error verificando la elegibilidad. Intenta nuevamente."
+        import json as _json
+        try:
+            res = _json.loads(raw)
+        except Exception:
+            res = {"numero_orden": numero, "dias_desde_compra": dias, "elegible": dias <= 30, "motivo": "Resultado parseado por fallback"}
+        st.session_state.elegibilidad_result = res
+        if res.get("elegible"):
+            if not direccion:
+                return "Tu orden es elegible para devolución. Por favor, indícame la direccion_cliente para generar la etiqueta."
+            # Si ya hay dirección, pasamos a generar etiqueta en el siguiente bloque
+        else:
+            # No elegible: respondemos aquí mismo (también cubierto por Paso 1 en próximas vueltas)
+            st.session_state.devolucion_fields = {"numero_orden": None, "dias_desde_compra": None, "direccion_cliente": None}
+            st.session_state.elegibilidad_result = None
+            st.session_state.etiqueta_result = None
+            return f"Tu orden {res.get('numero_orden')} no es elegible para devolución. Motivo: {res.get('motivo')}"
+
+    # Paso 3: si es elegible y tenemos dirección, generamos etiqueta
+    if st.session_state.elegibilidad_result and st.session_state.elegibilidad_result.get("elegible") and direccion:
+        try:
+            raw = generar_etiqueta_devolucion.func(numero_orden=st.session_state.elegibilidad_result.get("numero_orden"), direccion_cliente=direccion)
+        except Exception as e:
+            _ecobot_logger.exception("Error en generar_etiqueta_devolucion: %s", e)
+            return "Ocurrió un error generando la etiqueta. Intenta nuevamente."
+        import json as _json
+        try:
+            etiqueta = _json.loads(raw)
+        except Exception:
+            etiqueta = {"numero_orden": numero, "direccion_cliente": direccion, "guia": "ECOMERROR", "url_etiqueta": "N/A", "estado": "generada"}
+        st.session_state.etiqueta_result = etiqueta
+        # Reset para nuevo caso
+        st.session_state.devolucion_fields = {"numero_orden": None, "dias_desde_compra": None, "direccion_cliente": None}
+        st.session_state.elegibilidad_result = None
+        msg = (
+            "Etiqueta de devolución generada:\n"
+            f"- Orden: {etiqueta.get('numero_orden')}\n"
+            f"- Guía: {etiqueta.get('guia')}\n"
+            f"- URL: {etiqueta.get('url_etiqueta')}\n"
+        )
+        return msg
+
+    # Si no podemos manejarlo determinísticamente, dejar al agente
+    return None
+
+# TTL por inactividad
+now_ts = time()
+elapsed = now_ts - float(st.session_state.last_activity_ts or 0)
+if elapsed > st.session_state.ttl_minutes * 60 and st.session_state.chat_history:
+    st.info("La conversación se reinició por inactividad.")
+    st.session_state.chat_history = []
+    _ecobot_logger.info("TTL expirado: chat_history borrado tras %.1f segundos", elapsed)
+
+# Log inicial del estado de sesión
+_log_session_state("startup")
 
 # Render del historial
 for msg in st.session_state.chat_history:
@@ -107,20 +304,43 @@ user_input = st.chat_input("Escribe tu mensaje...")
 if user_input:
     # Añadir mensaje del usuario
     st.session_state.chat_history.append(HumanMessage(user_input))
+    _update_devolucion_fields(user_input)
+    st.session_state.last_activity_ts = time()
+    _log_session_state("after_user_message")
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Invocar agente
-    try:
-        result = agent_executor.invoke({
-            "input": user_input,
-            "chat_history": st.session_state.chat_history,
-        })
-        output_text = result.get("output", "")
-    except Exception as e:
-        output_text = f"Ocurrió un error al ejecutar el agente: {e}"
+    # Manejo determinista del flujo de devolución (short-circuit)
+    handled = _maybe_handle_devolucion()
+    if handled is not None:
+        with st.chat_message("assistant"):
+            st.markdown(handled)
+        st.session_state.chat_history.append(AIMessage(handled))
+        st.session_state.last_activity_ts = time()
+        _log_session_state("after_ai_message")
+    else:
+        # Historial limitado para el modelo
+        max_ctx = int(st.session_state.max_ctx_messages)
+        ctx_history: List = st.session_state.chat_history[-max_ctx:]
 
-    # Mostrar respuesta y guardar en historial
-    with st.chat_message("assistant"):
-        st.markdown(output_text)
-    st.session_state.chat_history.append(AIMessage(output_text))
+        # Invocar agente
+        try:
+            _log_session_state("before_agent")
+            result = agent_executor.invoke({
+                "input": user_input,
+                "chat_history": ctx_history,
+                "devolucion_context": _build_devolucion_context(),
+            })
+            output_text = result.get("output", "")
+            if not isinstance(output_text, str) or output_text.strip() == "":
+                _ecobot_logger.warning("Respuesta vacía del agente; aplicando fallback. Result=%s", result)
+                output_text = "Lo siento, no pude generar una respuesta. ¿Puedes reformular o reiniciar la conversación desde la barra lateral?"
+        except Exception as e:
+            output_text = f"Ocurrió un error al ejecutar el agente: {e}"
+
+        # Mostrar respuesta y guardar en historial
+        with st.chat_message("assistant"):
+            st.markdown(output_text)
+        st.session_state.chat_history.append(AIMessage(output_text))
+        st.session_state.last_activity_ts = time()
+        _log_session_state("after_ai_message")

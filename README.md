@@ -30,6 +30,7 @@ Asistente web con agente de IA que usa RAG sobre la carpeta "Base de conocimient
   - Priorizar RAG para preguntas generales.
   - Exigir numero_orden y dias_desde_compra antes de verificar elegibilidad.
   - Nunca generar etiqueta sin verificar elegibilidad primero.
+  - Desambiguación: si el usuario responde solo con un número cuando se pedían días, interpretarlo como dias_desde_compra.
 
 - Diagrama de flujo del proceso de devolución:
   - Usuario solicita devolución
@@ -103,8 +104,9 @@ Usuario
   - PII: evitar registrar datos sensibles; anonimizar campos como dirección y número de orden en logs de producción.
   - Uso de herramientas: el agente sólo llama herramientas permitidas; nunca escribe fuera de la app.
 - Monitoreo y observabilidad:
-  - Logging a nivel de agente y herramienta (verbose=True en AgentExecutor). Puede integrarse con soluciones como Streamlit logger, OpenTelemetry o un SIEM.
-  - Alertas al detectar errores repetidos (p.ej., fallos de RAG o múltiples etiquetas no elegibles).
+  - Logging a nivel de agente y herramienta (toggle de verbose en la barra lateral).
+  - Logging de session_state: la app imprime un resumen en consola en cuatro momentos (inicio, tras mensaje del usuario, antes del agente y tras respuesta del asistente).
+  - Puede integrarse con OpenTelemetry o un SIEM.
 - Propuestas de mejora:
   - Agente CRM para actualizar datos del cliente, con autenticación y autorización.
   - Autenticación de usuarios en la UI (p.ej., streamlit-auth).
@@ -122,6 +124,20 @@ Usuario
 4) Uso:
    - Consulta políticas e inventario con preguntas naturales.
    - Para devoluciones, proporciona numero_orden, dias_desde_compra y luego direccion_cliente.
+   - Barra lateral:
+     - TTL inactividad (min): minutos tras los cuales se reinicia la conversación automáticamente.
+     - Mensajes al modelo (contexto): límite de mensajes recientes que se envían al LLM para evitar bloat.
+     - Modo depuración (verbose): muestra trazas detalladas del AgentExecutor.
+     - Botón Reiniciar conversación: limpia el historial manualmente.
+
+## Controles de estabilidad añadidos
+- TTL de inactividad configurable que limpia el historial automáticamente tras el tiempo definido.
+- Límite de contexto: solo se envían N mensajes recientes al LLM (configurable en la barra lateral).
+- Máximo de iteraciones del agente (max_iterations=6) y early_stopping_method="generate" para evitar bucles.
+- Fallback ante respuestas vacías del LLM con mensaje amigable al usuario.
+- Supresión del warning ruidoso "Key 'title' is not supported in schema".
+- Extracción ligera de campos de devolución (numero_orden, dias_desde_compra, direccion_cliente) desde los mensajes y provisión al prompt como devolucion_context para evitar repetir preguntas.
+- Desambiguación: si el usuario responde solo con un número cuando se piden días, se interpreta como dias_desde_compra.
 
 ## Validación de la automatización de devoluciones
 
@@ -134,7 +150,7 @@ Preparación
 Casos de validación end-to-end
 1) Preguntas generales (RAG)
    - Prompt: ¿Cuál es la política de devoluciones?
-   - Esperado: respuesta basada en la KB con fragmentos y fuentes; si no hay índice, mensaje de fallback (RAG no disponible o sin resultados).
+   - Esperado: respuesta basada en la KB con fragmentos y fuentes; si no hay índice, mensaje de fallback.
 2) Inicio de devolución sin datos
    - Prompt: Quiero devolver un producto.
    - Esperado: solicita numero_orden y dias_desde_compra (sin llamar herramientas aún).
@@ -163,10 +179,12 @@ Casos de validación end-to-end
    - Acciones: Quita/invalid GEMINI_API_KEY y recarga.
    - Esperado: mensaje en la barra lateral indicando falta de API key; la UI sigue operativa.
 11) Orden de herramientas (traza)
-   - Opcional: activa verbose=True en AgentExecutor para observar llamadas.
+   - Acción: activa "Modo depuración (verbose)" en la barra lateral.
    - Esperado: primero verificar_elegibilidad_producto y solo después generar_etiqueta_devolucion cuando sea elegible y haya dirección.
 12) Idioma y formato
    - Esperado: respuestas en español, breves y claras; JSON entendible para elegibilidad/etiqueta.
+13) Estabilidad (TTL y límite de contexto)
+   - Esperado: no se congela en conversaciones largas; si excede el TTL, se reinicia automáticamente y lo informa.
 
 Criterios de aceptación
 - El agente guía al usuario pidiendo datos faltantes.
@@ -174,6 +192,14 @@ Criterios de aceptación
 - Responde consultas de KB con fuentes y hace fallback si no hay índice.
 - Maneja casos elegible/no elegible correctamente y comunica el motivo.
 - La app no se cae ante falta de API key o KB vacía.
+- Conversaciones largas se mantienen estables con el límite de contexto y TTL.
+
+## Solución de problemas
+- La UI parece congelarse o no responde:
+  - Usa el botón "Reiniciar conversación" o espera a que el TTL limpie la sesión.
+  - Reduce "Mensajes al modelo (contexto)" si la conversación es muy larga.
+  - Activa "Modo depuración (verbose)" para ver la secuencia de llamadas del agente.
+- Advertencias "Key 'title'...": ya están suprimidas; si reaparecen, reinicia la app.
 
 ## Notas
 - La app sólo lee datos desde "Base de conocimientos" dentro del proyecto.
