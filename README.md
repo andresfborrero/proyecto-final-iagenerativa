@@ -1,5 +1,9 @@
 # Proyecto Final: EcoBot (proyecto_final_ecomarket)
 
+# Integrantes:
+- Andres Borrero
+- Joshua Triana
+
 Asistente web con agente de IA que usa RAG sobre la carpeta "Base de conocimientos" y herramientas simuladas para gestionar devoluciones.
 
 ## Estructura
